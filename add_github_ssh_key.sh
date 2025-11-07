@@ -1,54 +1,56 @@
 #!/bin/bash
 
-AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"
+AUTHORIZED_KEYS=".ssh/authorized_keys"   # Relative path; resolved remotely
+read -p "Enter path to host file(if host is in the same directory, just input its title): " HOST_FILE
+read -p "Enter username of machine: " USER
+read -p "Enter the full GitHub keys link: " GITHUB_KEYS_URL
+read -p "Enter the user's mail: " NAME
 
-# Ensure ~/.ssh exists
-mkdir -p "$HOME/.ssh"
-chmod 700 "$HOME/.ssh"
-
-# Ensure authorized_keys file exists
-touch "$AUTHORIZED_KEYS"
-chmod 600 "$AUTHORIZED_KEYS"
-
-# Ask for the GitHub .keys link
-read -p "Enter the full GitHub .keys link (e.g., https://github.com/username.keys): " url
-
-# Validate that input looks like a GitHub .keys link
-if [[ ! "$url" =~ ^https://github.com/.+\.keys$ ]]; then
-    echo "[ERROR] Invalid link. It must be in the form: https://github.com/<username>.keys"
-    exit 1
+# Validate host file
+if [[ ! -f "$HOST_FILE" ]]; then
+  echo "❌ Host file not found: $HOST_FILE"
+  exit 1
 fi
 
-# Fetch keys
-keys=$(curl -s "$url")
-
-# Check if response is empty
-if [[ -z "$keys" ]]; then
-    echo "[ERROR] No keys found or link not reachable: $url"
-    exit 1
+# Fetch keys from GitHub
+KEYS=$(curl -s "$GITHUB_KEYS_URL")
+if [ -z "$KEYS" ]; then
+  echo "❌ No keys found at $GITHUB_KEYS_URL"
+  exit 1
 fi
 
-# Ask for the person's name/identifier
-read -p "Enter the name/identifier for this user: " name
+# Loop through all hosts
+while IFS= read -r HOST || [[ -n "$HOST" ]]; do
+  [[ -z "$HOST" || "$HOST" == \#* ]] && continue
 
-# Process each key
-added=0
-skipped=0
-while IFS= read -r key; do
-    if [[ -n "$key" ]]; then
-        # Extract just the first 2 fields (key type + key data), ignore existing comments
-        key_base=$(echo "$key" | awk '{print $1,$2}')
+  echo "==== Connecting to $HOST ===="
 
-        # Check if the base key is already present in authorized_keys
-        if grep -qF "$key_base" "$AUTHORIZED_KEYS"; then
-            echo "[SKIP] Key already exists for $name"
-            ((skipped++))
-        else
-            echo "$key # Added for $name" >> "$AUTHORIZED_KEYS"
-            echo "[ADD] Key added for $name"
-            ((added++))
-        fi
-    fi
-done <<< "$keys"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$USER@$HOST" "bash -s" <<EOF
+# Ensure .ssh directory and authorized_keys exist
+mkdir -p ~/.ssh
+touch ~/$AUTHORIZED_KEYS
+chmod 700 ~/.ssh
+chmod 600 ~/$AUTHORIZED_KEYS
 
-echo "[DONE] $added new key(s) added, $skipped skipped ."
+# Check if the key already exists in authorized_keys
+if grep -qF "$KEYS" ~/$AUTHORIZED_KEYS; then
+  echo "⚠️  Key for $NAME already exists on $HOST"
+else
+  echo "$KEYS # Added for $NAME" >> ~/$AUTHORIZED_KEYS
+  echo "✅ Key added for $NAME on $HOST"
+fi
+
+# Log entry
+echo 'I entered this server with names and keys' > ~/entered.txt
+EOF
+
+  if [[ $? -eq 0 ]]; then
+    echo "✅ Successfully processed $HOST"
+  else
+    echo "❌ Failed to connect or execute on $HOST"
+  fi
+
+  echo "==== Disconnected from $HOST ===="
+  echo
+done < "$HOST_FILE"
+
